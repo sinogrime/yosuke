@@ -75,13 +75,15 @@ fn config() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     // get first four bytes of the data, convert into rust number.
     let length = u32::from_le_bytes(raw[0..4].try_into()?) as usize; // should be config length 
     if length == 0 || length > 4092 { // check if the length is bigger than expected or doesn't exist
-        MessageBoxW( // show Windows MessageBox to user
-            std::ptr::null_mut(),
-            wstring("Failed to read config!").as_ptr(),
-            wstring("Error").as_ptr(),
-            MB_OKCANCEL | MB_ICONERROR,
-        );
-        return Err("Failed to read config!".into());
+        unsafe { // winapi interactions are always unsafe unfortunately
+            MessageBoxW( // show Windows MessageBox to user
+                std::ptr::null_mut(),
+                wstring("Failed to read config!").as_ptr(),
+                wstring("Error").as_ptr(),
+                MB_OKCANCEL | MB_ICONERROR,
+            );
+            return Err("Failed to read config!".into());
+        }
     }
 
     // return the encrypted config data as bytes, skip first 4 bytes (they are the length)
