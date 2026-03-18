@@ -34,13 +34,12 @@ impl ClientView {
     pub fn new(
         socket: String,
         mutex: String,
-        elevated: bool,
         info: ComputerInfoResponse,
         sender: UnboundedSender<UiManagerCommand>,
     ) -> Self {
         Self {
             mutex: mutex,
-            elevated: elevated, // assume no
+            elevated: info.elevated, // assume no
             socket: socket,
             state: ClientViewState {
                 //visible: false,

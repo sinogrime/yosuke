@@ -33,53 +33,54 @@ pub async fn task(
     stream: TcpStream,
     mut mouthpiece: ClientPassthroughMouthpiece,
 ) -> Result<(), std::io::Error> {
-    println!("[v] client task! read loop should go here");
-
-    let (read, write) = stream.into_split();
+    let (read, write) = stream.into_split(); // split our tcp stream into two, one for reading and one for writing.
+    //                                          this helps read and write at the same time without blocking
     let mut read = read.compat();
     let mut write = write.compat_write();
 
     loop {
         tokio::select! {
-            stream_read = shared::net::read(&mut read) => {
+            // upon receiving data from a client over the network...
+            stream_read = shared::net::read(&mut read) => { // using our net function, read in from our tcp stream.
                 match stream_read {
-                    Ok(buf) => {
-                        // println!("[*] received data from a client");
-
-                        let mut nonce = [0u8; 12];
-                        nonce.copy_from_slice(&buf[..12]);
-                        let buffer = &buf[12..];
-                        if let Ok(decrypted) = encryption.decrypt(&nonce, buffer) {
-                            let _ = mouthpiece.to_manager.send(ClientResponse::Read(mutex.clone(), decrypted));
+                    Ok(buf) => { // decryption starts if we got data successfuly
+                        let mut nonce = [0u8; 12]; // reserve space for nonce
+                        nonce.copy_from_slice(&buf[..12]); // first 12 bytes of data is nonce
+                        let buffer = &buf[12..]; // the rest is encrypted data
+                        if let Ok(decrypted) = encryption.decrypt(&nonce, buffer) { // decrypt the data with the nonce
+                            let _ = mouthpiece.to_manager.send(ClientResponse::Read(mutex.clone(), decrypted)); // send the decrypted data to the manager for processing,
+                            //                                                                                     along with the mutex so the manager knows who sent it 
                         } else {
-                            println!("decryption failed!! wtf");
+                            println!("decryption failed!!"); // very bitter error handling
                         }
                     },
                     Err(_e) => {
-                        println!("[x] error reading data from client: {}", _e);
+                        println!("[x] error reading data from client: {}", _e); // error handling a litle better
                         if _e.kind() != std::io::ErrorKind::FileTooLarge {
-                            let _ = mouthpiece.to_manager.send(ClientResponse::Disconnect(mutex.clone()));
+                            let _ = mouthpiece.to_manager.send(ClientResponse::Disconnect(mutex.clone())); // we will disconnect the client if something goes seriously wrong
                             return Err(_e);
                         }
                     }
                 }
             }
 
+            // upon receiving a command from the manager
             manager_read = mouthpiece.from_manager.recv() => {
                 if let Some(command) = manager_read {
                     match command {
-                        ClientCommand::Write(buf) => {
-                            if let Ok((nonce, encrypted)) = encryption.encrypt(&buf)
+                        ClientCommand::Write(buf) => { // if we are told to send data to the client
+                            if let Ok((nonce, encrypted)) = encryption.encrypt(&buf) // we encrypt it, getting back a nonce and encrypted data
                             {
-                                let mut payload = Vec::new();
+                                let mut payload = Vec::new(); // make a payload that merges the nonce and encrypted data into one large byte array
                                 payload.extend_from_slice(&nonce);
                                 payload.extend_from_slice(&encrypted);
 
-                                let _ = shared::net::write(&mut write, &payload).await;
+                                let _ = shared::net::write(&mut write, &payload).await; // send it off to the client using our net function
 
                             } else {
                                 println!("[x] failed to write to client");
-                                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Failed to write to client"));
+                                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Failed to write to client")); // throw an error if encryption fails,
+                                //                                                                                         which will cause the client to disconnect
                             }
                         }
                     }

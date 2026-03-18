@@ -14,42 +14,42 @@ use crate::{
 
 pub fn render(
     ui: &mut Ui,
-    capture_type: CaptureType,
+    capture_type: CaptureType, // important! we open a window for each capture type
     mutex: &String,
     sender: &UnboundedSender<UiManagerCommand>,
-    input_state: &mut ClientViewInputState,
+    input_state: &mut ClientViewInputState, // input simulation state (mouse/kbd)
     capture: &mut ClientViewCapture,
-    capturing: &mut bool,
-    texture: &mut Option<TextureHandle>,
-    selection: u32,
+    capturing: &mut bool, // are we capturing? stores the button state
+    texture: &mut Option<TextureHandle>, // paint frames to this handle
+    selection: u32, // chosen camera or monitor index. uses list from computer_info payload
 ) {
     //////////////////////////////////////
     // quality toggle
-    ui.horizontal(|ui| {
+    ui.horizontal(|ui| { // put everything within here on the same row
         if *capturing {
             if ui.button("⏹  Stop").clicked() {
                 println!("[*] sending CaptureCommand::Stop");
                 let _ = sender.send(UiManagerCommand::SendCommand(
-                    mutex.clone(),
+                    mutex.clone(), // tell manager to send command to client, saying 'stop capturing this type'
                     Command::Capture(CaptureCommand::Stop, capture_type.clone()),
                 ));
-                *capturing = false;
+                *capturing = false; // update state to change button
             }
         } else {
             if ui.button("▶  Start").clicked() {
                 println!("[*] sending CaptureCommand::Start");
                 let _ = sender.send(UiManagerCommand::SendCommand(
                     mutex.clone(),
-                    Command::Capture(
+                    Command::Capture( // manager -> client "start capturing this type with these settings!"
                         CaptureCommand::Start(selection, capture.quality.clone()),
                         capture_type.clone(),
                     ),
                 ));
-                *capturing = true;
+                *capturing = true; // again, update state to change button
             };
         }
-        ui.add_enabled_ui(!*capturing, |ui| {
-            ui.horizontal(|ui| {
+        ui.add_enabled_ui(!*capturing, |ui| { // only enabled when not capturing
+            ui.horizontal(|ui| { // same row as button
                 ui.label("Quality: ");
                 ui.radio_value(&mut capture.quality, CaptureQuality::Quality, "Slow");
                 ui.radio_value(&mut capture.quality, CaptureQuality::Speed, "Fast");
@@ -57,21 +57,21 @@ pub fn render(
         });
     });
 
-    if let Some(ref image_data) = capture.data {
-        let available_size = ui.available_size();
-        let image_size = egui::Vec2::new(image_data.width() as f32, image_data.height() as f32);
+    if let Some(ref image_data) = capture.data { // if we have a frame to render...
+        let available_size = ui.available_size(); // see how much space we have to put the image
+        let image_size = egui::Vec2::new(image_data.width() as f32, image_data.height() as f32); // how big is the image
 
-        let min_scale = 0.1;
-        let max_scale_for_space =
+        let min_scale = 0.1; // how small we can make the image
+        let max_scale_for_space =  // calculate how much we can scale up
             (available_size.x / image_size.x).min(available_size.y / image_size.y) * 0.95;
         let max_scale = if capture.quality == CaptureQuality::Quality {
-            max_scale_for_space.max(2.0)
+            max_scale_for_space.max(2.0) // if quality is higher, make it possible to scale up more
         } else {
-            max_scale_for_space.max(1.0)
+            max_scale_for_space.max(1.0) // if lower, no point scaling up when quality sucks.
         };
 
         ui.add(
-            Slider::new(&mut capture.scale, min_scale..=max_scale)
+            Slider::new(&mut capture.scale, min_scale..=max_scale) // this controls the size of the frame
                 .text("Scale")
                 .step_by(0.05),
         );
@@ -79,20 +79,20 @@ pub fn render(
         let max_scale = if capture.quality == CaptureQuality::Quality {
             capture.max_scale
         } else {
-            1.0
+            1.0 // different values when prioritising quality
         };
         ui.add(Slider::new(&mut capture.scale, 0.25..=max_scale).text("Scale"));
     }
 
-    if let Some(ref image) = capture.data {
-        if texture.is_none() {
+    if let Some(ref image) = capture.data { // let's grab this handle again, but to paint
+        if texture.is_none() { // in the case there is no texture...
             *texture = Some(ui.ctx().load_texture(
                 format!("screen_{}", mutex.clone()),
-                image.clone(),
+                image.clone(), // load the image data into a paintable texture that we can render. we make one
                 Default::default(),
             ));
         };
-        if let Some(texture) = texture.as_ref() {
+        if let Some(texture) = texture.as_ref() { // we should have this texture now
             let available_size = ui.available_size();
             let image_size = texture.size_vec2();
 
@@ -103,7 +103,7 @@ pub fn render(
 
             let display_size = image_size * capture.scale;
 
-            let image = ui
+            let image = ui // adding the actual frame to the window
                 .add(Image::new(texture).fit_to_exact_size(display_size))
                 .interact(Sense::click());
 

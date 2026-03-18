@@ -1,6 +1,3 @@
-// SHOUTOUT TO CLAUDE SONNET 4
-// U SAVED MY MOTHAFKN LIFE.
-
 use shared::commands::{
     BaseResponse, CapturePacket, CaptureQuality, CaptureType, Response, VideoPacket,
 };
@@ -67,30 +64,29 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
     fn on_frame_arrived(
         &mut self,
         frame: &mut Frame,
-        capture_control: InternalCaptureControl,
+        capture_control: InternalCaptureControl, // not ours! belongs to windows_capture crate
     ) -> Result<(), Self::Error> {
-        if !self.running.load(Ordering::SeqCst) {
+        if !self.running.load(Ordering::SeqCst) { // if our atomic bool becomes false, we shut off
             capture_control.stop();
             return Ok(());
         }
 
-        // Get frame dimensions
+        // frame dimensions
         let width = frame.width() as usize;
         let height = frame.height() as usize;
 
-        // Get the raw frame data
-        let mut frame_buffer = frame.buffer()?;
-        let frame_data = frame_buffer.as_raw_buffer();
+        let mut frame_buffer = frame.buffer()?; // raw framebuffer from windows screen capture
+        let frame_data = frame_buffer.as_raw_buffer(); // okay. actually the raw framebuffer. sorry.
 
-        // Process the frame data - try without conversion first
-        self.stride(frame_data, width, height);
+        self.stride(frame_data, width, height); // bugfix: capture was completely unusable without fixing screen 'stride'.
+        //                                          pic is attached to NEA doc
 
-        let mut jpeg_quality = 60;
+        let mut jpeg_quality = 60; // good compromise of both quality and speed by default
         if self.quality == CaptureQuality::Quality {
-            jpeg_quality = 80;
+            jpeg_quality = 80;  // we can go a little higher if the user wants
         }
 
-        let packet: VideoPacket = encode_fast(
+        let packet: VideoPacket = encode_fast( // use our encode function to make a JPEG
             &self.frame_vec,
             FrameSize {
                 // from
@@ -109,7 +105,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         send(
             BaseResponse {
                 id: self.id,
-                response: Response::CapturePacket(
+                response: Response::CapturePacket( // send off a JPEG to the server
                     CaptureType::Screen,
                     CapturePacket::Video(packet),
                 ),
@@ -158,39 +154,38 @@ pub fn main(
     quality: CaptureQuality,
     device: u32,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Set DPI awareness to system aware
+
+    // for Windows, we need to set the process DPI awareness to avoid scaling issues with high-DPI displays
     #[cfg(windows)]
-    unsafe {
+    unsafe { // uses the windows API which is always unsafe, sadly
         winapi::um::winuser::SetProcessDpiAwarenessContext(
             winapi::shared::windef::DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
         );
     }
 
-    // Get the specified monitor
-    let monitors = Monitor::enumerate().map_err(|e| e.to_string())?;
+    let monitors = Monitor::enumerate().map_err(|e| e.to_string())?; // get all monitors present on the system
     let monitor = monitors
         .into_iter()
-        .nth(device as usize)
+        .nth(device as usize) // get monitor based on index
         .ok_or("Monitor not found")?;
 
-    // Get monitor dimensions for calculating target size
-    let (width, height) = (
+    let (width, height) = ( // get the dimensions of the monitor
         monitor.width().map_err(|e| e.to_string())? as usize,
         monitor.height().map_err(|e| e.to_string())? as usize,
     );
 
-    let mut resize_factor = 4.0;
-    if quality == CaptureQuality::Quality {
+    let mut resize_factor = 4.0; // by default, downscale by 4x for more responsive capture. lower quality, can be unreadable!
+    if quality == CaptureQuality::Quality { // if we want high quality capture instead, we downscale by 2x to preserve details
         resize_factor = 2.0;
     }
-    let (target_width, target_height) = (
+    let (target_width, target_height) = ( // calculate new size of the frame after resize
         (width as f32 / resize_factor) as usize,
         (height as f32 / resize_factor) as usize,
     );
 
-    let initial_capacity = width * height * 4;
+    let initial_capacity = width * height * 4; // 4 bytes per pixel for BGRA8 format
 
-    // Configure capture settings with flags containing all necessary data
+    // we use the 'windows_capture' crate to capture, which requires Settings to be configured
     let settings = Settings::new(
         monitor,
         CursorCaptureSettings::Default,
@@ -199,19 +194,19 @@ pub fn main(
         MinimumUpdateIntervalSettings::Default,
         DirtyRegionSettings::Default,
         ColorFormat::Bgra8, // Try RGBA8 first
-        (
-            id,
-            tx,
-            running.clone(),
-            quality,
-            target_width,
-            target_height,
-            initial_capacity,
+        ( // we add our own flags to passthrough to the capture handler here
+            id, // command id
+            tx, // channel to send frames to handler
+            running.clone(), // atomic bool: state. running/not
+            quality, // enum for quality/speed
+            target_width, // resized width
+            target_height, // resized height
+            initial_capacity, // how much space we will use for capturing
         ),
     );
 
     // Start capture session
-    CaptureHandler::start(settings)?;
+    CaptureHandler::start(settings)?; // passthrough to here
     println!("[*] capturer should be dropped now!!");
 
     Ok(())

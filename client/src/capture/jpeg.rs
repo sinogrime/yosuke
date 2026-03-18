@@ -8,76 +8,43 @@ pub struct FrameSize {
 }
 
 pub fn encode_fast(
-    frame: &[u8],
-    from: FrameSize,
-    to: FrameSize,
-    quality: u8,
-    rgb_buffer: &mut Vec<u8>,
+    frame: &[u8], // pointer to bytes as data
+    from: FrameSize, // w&h
+    to: FrameSize, // w&h
+    quality: u8, // 0-100, higher=better, takes longer though
+    rgb_buffer: &mut Vec<u8>, // we write here, which is why its a pointer
 ) -> VideoPacket {
-    rgb_buffer.clear();
+    rgb_buffer.clear(); // wipe first, just in caes
     rgb_buffer.extend(
-        frame
+        frame // fill with our frame
             .chunks_exact(4)
-            .flat_map(|bgra| [bgra[2], bgra[1], bgra[0]]),
+            .flat_map(|bgra| [bgra[2], bgra[1], bgra[0]]), // make sure pixels are in correct order
     );
 
+    // let img makes an image object that is used to resize and encode to JPEG
     let img = ImageBuffer::<Rgb<u8>, _>::from_raw(from.width, from.height, rgb_buffer.clone()).unwrap();
     let final_img = if to.width != from.width || to.height != from.height {
+        // resize the image in case the target size is different from the original size
+        // quality is usually lost here for performance
         image::imageops::resize(&img, to.width, to.height, FilterType::Nearest)
     } else {
-        img.clone()
+        img // nothing needed to do so just return what we already had lol
     };
 
-    let mut jpeg_data = Vec::new();
-    let encoder = Encoder::new(&mut jpeg_data, quality);
+    let mut jpeg_data = Vec::new(); // get ready to contain jpeg data!
+    let encoder = Encoder::new(&mut jpeg_data, quality); // prepare jpeg encoder from 'jpeg_encoder' crate
     encoder
         .encode(
-            final_img.as_raw(),
+            final_img.as_raw(), // bytes of image object
             to.width as u16,
             to.height as u16,
             jpeg_encoder::ColorType::Rgb,
         )
         .unwrap();
 
-    VideoPacket {
+    VideoPacket { // this is what we return, which will be sent to the server
         data: jpeg_data,
         width: to.width,
         height: to.height,
     }
 }
-/*
-pub fn encode(frame: Vec<u8>, from: FrameSize, to: FrameSize) -> VideoPacket {
-    let rgb: Vec<u8> = frame
-        .chunks(4)
-        .flat_map(|bgra| [bgra[2], bgra[1], bgra[0]]) // convert BGR to RGB
-        .collect();
-
-    let img =
-        ImageBuffer::<Rgb<u8>, _>::from_raw(from.width as u32, from.height as u32, rgb).unwrap();
-    let final_img = if to.width != from.width || to.height != from.height {
-        image::imageops::resize(&img, to.width as u32, to.height as u32, FilterType::Nearest)
-    } else {
-        img
-    };
-
-    let mut jpeg_data = Vec::new();
-    {
-        let mut cursor = Cursor::new(&mut jpeg_data);
-        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 60);
-        encoder
-            .encode(
-                final_img.as_raw(),
-                to.width as u32,
-                to.height as u32,
-                ColorType::Rgb8.into(),
-            )
-            .unwrap();
-    };
-
-    VideoPacket {
-        data: jpeg_data,
-        width: to.width as u32,
-        height: to.height as u32,
-    }
-}
-*/
