@@ -70,24 +70,33 @@ pub fn wstring(s: &str) -> Vec<u16> {
     }
 }*/
 fn config() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let raw = &_CONFIG_DATA; // make pointer to the raw config data
+    unsafe {
+        std::ptr::read_volatile(_CONFIG_DATA.as_ptr()); // reads from _CONFIG_DATA
 
-    // get first four bytes of the data, convert into rust number.
-    let length = u32::from_le_bytes(raw[0..4].try_into()?) as usize; // should be config length 
-    if length == 0 || length > 4092 { // check if the length is bigger than expected or doesn't exist
-        unsafe { // winapi interactions are always unsafe unfortunately
-            MessageBoxW( // show Windows MessageBox to user
-                std::ptr::null_mut(),
+        // Now read the length
+        let length_ptr = _CONFIG_DATA.as_ptr() as *const u32;
+        let length = std::ptr::read_volatile(length_ptr).to_le() as usize;
+
+        if length == 0 || length > 4092 {
+            MessageBoxW(
+                null_mut(),
                 wstring("Failed to read config!").as_ptr(),
                 wstring("Error").as_ptr(),
                 MB_OKCANCEL | MB_ICONERROR,
             );
             return Err("Failed to read config!".into());
         }
-    }
+        //////////////////////////////////////////////////
 
-    // return the encrypted config data as bytes, skip first 4 bytes (they are the length)
-    Ok(raw[4..4 + length].to_vec())
+        // STAGE 2: TRY TO READ THE CONFIG
+        let config_start = _CONFIG_DATA.as_ptr().add(4);
+        let mut config_trimmed = vec![0u8; length];
+        for i in 0..length {
+            config_trimmed[i] = std::ptr::read_volatile(config_start.add(i));
+        }
+
+        Ok(config_trimmed)
+    }
 }
 fn decrypt(
     config_trimmed: &Vec<u8>,
