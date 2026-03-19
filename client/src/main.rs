@@ -128,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut connected = false;
         for attempt in 1..=5 { // on first connection, only try 5 times
             println!("[*][main] connection attempt #{}", attempt);
-            match try_connect(&socket, &config, _key).await {
+            match connect(&socket, &config, _key).await {
                 Ok(_) => {
                     connected = true;
                     break;
