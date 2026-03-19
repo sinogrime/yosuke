@@ -11,6 +11,9 @@ use shared::commands::Command;
 // we render a dropdown for each client, we pass in each client's unique state
 // so we can access the data. we need the UI variable to render to the viewport
 fn menu(view: &mut ClientView, ui: &mut Ui) -> () {
+    ui.label(view.info.hostname.clone()); // just so we know what client we will be opening a window for
+    //                                     yes we can definitely afford to clone it lol
+
     ui.menu_button("🔍  Surveillance", |ui| { // displays as a category within the dropdown
         if ui.button("🖵  Desktop").clicked() { // the box is an emoji that isn't loading
         //                                        with the font used by VS code
@@ -123,15 +126,16 @@ pub fn render(view: &mut View, ui: &mut Ui) -> () {
 
                         // we create a Label, add our click Sense to it,
                         // and store it in a variable so we can attach a dropdown
-                        let response = ui.add(Label::new(client.0).sense(sense));
+                        let response = ui.add(Label::new(client.1.mutex.clone()).sense(sense));
 
                         Popup::menu(&response) // add this Popup menu to the label we made
-                            .id(Id::new("menu")) // unique identifier so we can have multiple without conflicts, see below
+                            .id(Id::new(format!("menu_{}", client.1.mutex))) // unique identifier so we can have multiple without conflicts, see below
+                            // changed from static "menu" string to unique string to open context menu per client
                             .show(|ui| menu(&mut client.1, ui));
 
                         Popup::context_menu(&response) // display the same menu on right click as well.
                         // it will look the same, but context_menu only appears on right click, menu on left.
-                            .id(Id::new("context_menu")) // different ID is needed to prevent conflict
+                            .id(Id::new(format!("ctx_menu_{}", client.1.mutex))) // different ID is needed to prevent conflict
                             .show(|ui| menu(&mut client.1, ui));
 
                     });

