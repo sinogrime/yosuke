@@ -63,7 +63,7 @@ fn menu(view: &mut ClientView, ui: &mut Ui) -> () {
         if ui.button("✖  Disconnect").clicked() { // disconnects the client when clicked
             let _ = view
                 .sender
-                .send(UiManagerCommand::Disconnect(view.mutex.clone()));
+                .send(UiManagerCommand::SendCommand(view.mutex.clone(), Command::Disconnect));
             // ^ once again, use the client's unique channel to tell the UI to send a message to the manager
             // ...saying disconnect our client, here's our mutex, please disconnect us.
         };

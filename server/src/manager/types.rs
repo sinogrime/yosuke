@@ -18,7 +18,7 @@ pub enum ProcessedResponse {
 
 pub enum UiManagerCommand {
     SendCommand(String, Command),
-    Disconnect(String),
+    // Disconnect(String),
 }
 pub enum UiManagerResponse {
     GetResponse(String, ProcessedResponse),

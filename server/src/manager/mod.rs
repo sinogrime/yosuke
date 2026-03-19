@@ -103,13 +103,13 @@ impl ClientManager {
                                 } else { client.counter += 1; }; // if command sent, increase counter by 1 so the next command gets a new ID
                             }
                         },
-                        UiManagerCommand::Disconnect(mutex) => { // if the UI tells us to disconnect a client...
+                        /*UiManagerCommand::Disconnect(mutex) => { // if the UI tells us to disconnect a client...
                             if let Some(client) = self.clients.get_mut(&mutex) {
                                 client.handle.abort(); // we will abort the task handling tcp communication, effectively disconnecting it
                                 self.clients.remove(&mutex); // we remove it from our hashmap to forget about it
                                 let _ = self.mouthpiece.to_ui.send(UiManagerResponse::Remove(mutex)); // we tell the UI to remove it from its view state to stop showing it
                             }
-                        }
+                        } no longer handled by us */
                     }
                 },
                 Some(server_command) = self.mouthpiece.from_server.recv() => { // this block handles commands from the server
